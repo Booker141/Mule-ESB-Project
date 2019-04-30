@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns:twitter="http://www.mulesoft.org/schema/mule/twitter" xmlns:smtps="http://www.mulesoft.org/schema/mule/smtps" xmlns:smtp="http://www.mulesoft.org/schema/mule/smtp" xmlns:db="http://www.mulesoft.org/schema/mule/db" xmlns:tracking="http://www.mulesoft.org/schema/mule/ee/tracking" xmlns:http="http://www.mulesoft.org/schema/mule/http" xmlns:json="http://www.mulesoft.org/schema/mule/json" xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xmlns:spring="http://www.springframework.org/schema/beans" version="EE-3.6.0"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans-current.xsd
+http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+http://www.mulesoft.org/schema/mule/json http://www.mulesoft.org/schema/mule/json/current/mule-json.xsd
+http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd
+http://www.mulesoft.org/schema/mule/ee/tracking http://www.mulesoft.org/schema/mule/ee/tracking/current/mule-tracking-ee.xsd
+http://www.mulesoft.org/schema/mule/smtp http://www.mulesoft.org/schema/mule/smtp/current/mule-smtp.xsd
+http://www.mulesoft.org/schema/mule/smtps http://www.mulesoft.org/schema/mule/smtps/current/mule-smtps.xsd
+http://www.mulesoft.org/schema/mule/twitter http://www.mulesoft.org/schema/mule/twitter/current/mule-twitter.xsd">
+    <http:request-config name="LecturaInvernadero" host="api.thingspeak.com" port="80" basePath="channels/68246/feed.json" doc:name="HTTP Request Configuration"/>
+    <http:request-config name="HTTP_Request_Configuration" host="localhost" port="8081" doc:name="HTTP Request Configuration"/>
+    <db:mysql-config name="MySQL_Configuration" host="localhost" port="3306" user="root" database="Invernadero" doc:name="MySQL Configuration"/>
+    <twitter:config name="Twitter__Configuration" accessKey="1110972023143124992-5Fc74Um4afMVZH65TxGOAhjGM3tbRL" accessSecret="XaXhHj87YUmCOY1EqHAR8u5ty664ilYbZcdr7shQ2UO4Q" consumerKey="2l6UMZ2aq9blSpyru9ZlFiJnp" consumerSecret="7HVzDb6IK7ej5mTDmXDTWBOiNYeBHIeS0rewTIwiwkDU25DgIV" doc:name="Twitter: Configuration"/>
+    <spring:beans>
+        <spring:bean id="Transformer" name="Bean" class="eventos.Transformador"/>
+    </spring:beans>
+    <flow name="invernaderoFlow">
+        <poll doc:name="Temporizador(Poll)">
+            <fixed-frequency-scheduler frequency="4" timeUnit="HOURS"/>
+            <http:request config-ref="LecturaInvernadero" path="/" method="GET" doc:name="Thingspeak(HTTP)"/>
+        </poll>
+        <byte-array-to-string-transformer doc:name="Formateo(Byte Array to String)"/>
+        <json:json-to-object-transformer doc:name="JSON to Object"/>
+        <auto-transformer returnClass="eventos.EventoInvernadero" name="JsonDataToEventoInvernadero"/>
+        <scatter-gather doc:name="Scatter-Gather">
+            <db:insert config-ref="MySQL_Configuration" doc:name="Database">
+                <db:parameterized-query><![CDATA[INSERT INTO registrosAnyPoint VALUES (NULL, #[payload.getHora()], #[payload.getTempAgua()], #[payload.getTempInt()], #[payload.getTempExt()], #[payload.getPH()]);]]></db:parameterized-query>
+            </db:insert>
+            <choice doc:name="Considerar temperatura interna(Choice)">
+                <when expression="#[payload.getTempInt()&gt;86 || payload.getTempInt()&lt;78]">
+                    <scatter-gather doc:name="Scatter-Gather">
+                        <choice doc:name="Considerar pH(Choice)">
+                            <when expression="#[payload.getPH()&gt;6.22 || payload.getPH()&lt;5.9]">
+                                <smtps:outbound-endpoint host="${mail.host}" responseTimeout="10000" doc:name="SMTP" from="${mail.from}" password="${mail.password}" subject="¡Peligro! Osterloh" to="${mail.to}" user="${mail.username}" port="465"/>
+                            </when>
+                        </choice>
+                        <twitter:update-status config-ref="Twitter__Configuration" status="#['&#161;ATENCI&#211;N! TEMPERATURA INTERNA FUERA DEL MARGEN ESPERADO.' + '\n' + payload.toString()]" doc:name="Tweet recomendación(Twitter)"/>
+                    </scatter-gather>
+                </when>
+                <otherwise>
+                    <twitter:update-status config-ref="Twitter__Configuration" status="#[payload.toString()]" doc:name="Tweet simple(Twitter)"/>
+                </otherwise>
+            </choice>
+        </scatter-gather>
+    </flow>
+</mule>
